@@ -1,0 +1,178 @@
+name: Security (push)
+
+on: [push]
+
+jobs:
+  sast:
+    name: static-analysis
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set up Python 3.8
+      uses: actions/setup-python@v1
+      with:
+        python-version: 3.8
+    - name: install bandit
+      run: |
+        python -m pip install bandit
+    - name: run bandit
+      run: |
+        bandit -r *.py -n 3 -f json -o ${{ github.workspace}}/bandit-report.json || true
+    - uses: actions/upload-artifact@v2
+      with:
+        name: bandit
+        path: ${{ github.workspace}}/bandit-report.json
+
+  secrets:
+    name: secret-detection
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: gitleaks
+      uses: dvdmelamed/gitleaks-action@master
+      with:
+        report-path: gitleaks-report.json
+      env:
+        ACTIONS_ALLOW_UNSECURE_COMMANDS: 'true'
+    - name: write report
+      run: |
+        echo $GITLEAKS_RESULT > gitleaks-report.json
+    - uses: actions/upload-artifact@v2
+      with:
+        name: gitleaks
+        path: gitleaks-report.json
+
+  sca:
+    name: dependency-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - uses: actions/setup-go@v2
+        with:
+          go-version: '1.16.3'
+      - name: Install pup
+        run: |
+          go get github.com/ericchiang/pup
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v1
+        with:
+          python-version: 3.8
+      - name: Install virtualenv
+        run: |
+          pip install virtualenv
+      - name: Install dependencies
+        run: |
+          virtualenv venv
+          source ./venv/bin/activate .
+          pip install -r requirements.txt
+      - name: Cache Dependency Check DB
+        uses: actions/cache@v2
+        with:
+          path: ~/.local/dependency-check/
+          key: $-depcheck-$
+          restore-keys: $-depcheck
+      - name: Install dependency-check
+        run: |
+          pip install dependency-check
+      - name: Run dependency-check
+        run: |
+          dependency-check --enableExperimental -s ./venv -f JSON
+      - run: |
+          ls
+      - name: Upload Test results
+        uses: actions/upload-artifact@v2
+        with:
+          name: dependency-check
+          path: ${{ github.workspace }}/dependency-check-report.json
+
+  dast:
+    name: dynamic-analysis
+    runs-on: ubuntu-latest
+    services:
+      localstack:
+        image: localstack/localstack
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: serverless
+          DEBUG: ""
+          DATA_DIR: ""
+          LAMBDA_EXECUTOR: ""
+          KINESIS_ERROR_PROBABILITY: ""
+          DOCKER_HOST: unix:///var/run/docker.sock
+          HOST_TMP_FOLDER: "/tmp"
+          HOSTNAME_EXTERNAL: localstack
+        options: >-
+          --name=localstack
+          --health-cmd="curl -sS 127.0.0.1:4566 || exit 1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+    steps:
+      - name: localstack health
+        run: |
+          curl http://localhost:4566/health
+      - uses: actions/checkout@v2
+      - name: Setup Node.js 14.x
+        uses: actions/setup-node@v1
+        with:
+          node-version: 14.x
+      - name: install serverless
+        run: sudo npm install -g serverless@2.29.0 && npm install
+      - name: Deploy to localstack
+        run: sls deploy --stage local
+      - name: Get deployment URL
+        run: |
+          URL=$(sls info --stage local | grep restapis)/ping
+          echo "target_url=$URL" >> $GITHUB_ENV
+      - name: ZAP Scan
+        uses: zaproxy/action-full-scan@v0.2.0
+        with:
+          target: "${{ env.target_url }}"
+          fail_action: false
+
+  policy-eval:
+    name: policy-evaluation
+    runs-on: ubuntu-latest
+    needs: [sast, secrets, sca, dast]
+    env:
+      TERM: xterm-256color
+    steps:
+      - uses: actions/checkout@v2
+      - uses: artis3n/setup-conftest@v0
+   
+      - name: pull
+        run: |
+          conftest pull git::https://github.com/dvdmelamed/opa-policy-test.git//policy
+
+      - uses: actions/download-artifact@v2
+        with:
+          name: bandit
+
+      - name: print sast report
+        run: |
+          cat ${{ github.workspace}}/bandit-report.json
+
+      - id: test-sast-policy
+        run: |
+          conftest test ${{ github.workspace}}/bandit-report.json -n sast
+
+      - id : check-sast-policy-exit-code
+        run: exit ${{ steps.test-sast-policy.outputs.exitcode }}
+
+      - uses: actions/download-artifact@v2
+        with:
+          name: gitleaks
+
+      - name: print secrets report
+        run: |
+          cat ${{ github.workspace}}/gitleaks-report.json
+
+      - id: test-secrets-policy
+        run: |
+          conftest test ${{ github.workspace}}/gitleaks-report.json -n secrets
+
+      - id : check-secrets-policy-exit-code
+        run: exit ${{ steps.test-secrets-policy.outputs.exitcode }}
+

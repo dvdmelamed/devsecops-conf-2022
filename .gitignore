@@ -1,0 +1,10 @@
+.DS_Store
+.serverless
+.idea
+node_modules
+workflow
+*-report.json
+
+# Ignore serverless manifest files
+serverless.manifest.json
+.serverless/manifest.json

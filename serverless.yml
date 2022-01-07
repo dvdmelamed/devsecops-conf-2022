@@ -1,0 +1,49 @@
+service: http-endpoint
+
+provider:
+  name: aws
+  runtime: python3.8
+  region: us-east-1
+  lambdaHashingVersion: 20201221
+  apiGateway:
+    shouldStartNameWithService: true
+
+plugins:
+  - serverless-localstack
+  - serverless-python-requirements
+
+custom:
+  pythonRequirements:
+    dockerizePip: non-linux
+  wsgi:
+    app: app.app
+  localstack:
+    host: http://localhost
+    stages:
+      - local
+    environment:
+      AWS_ACCESS_KEY_ID: "AKIAIOSFODNN7EXAMPLE"
+      AWS_SECRET_ACCESS_KEY: "SECRET_KEY"
+    endpoints:
+      APIGateway: http://localhost:4566
+      S3: http://localhost:4566
+      DynamoDB: http://localhost:4566
+      CloudFormation: http://localhost:4566
+      Elasticsearch: http://localhost:4566
+      ES: http://localhost:4566
+      SNS: http://localhost:4566
+      SQS: http://localhost:4566
+      Lambda: http://localhost:4566
+      Kinesis: http://localhost:4566
+
+functions:
+  currentTime:
+    handler: handler.get
+    events:
+      - http:
+          method: GET
+          path: /ping
+
+package:
+  exclude:
+    - node_modules/**
