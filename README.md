@@ -33,7 +33,7 @@ layers:
   None
 ```
 
-To test the endpoint, use: 
+To test the endpoint, use the following: 
 ```
 curl http://localhost:4566/restapis/8m3g5k99q8/local/_user_request_/ping
 ```
